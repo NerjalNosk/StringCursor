@@ -28,12 +28,24 @@ public class SimpleStringCursor implements StringCursor {
     private boolean select = false;
     private boolean word = false;
     private int cursor;
-    private int deletion;
-    private int selectStart;
+    private int deletion = 0;
+    private int selectStart = 0;
     private int size;
-    private String bakedResult = "";
+    private String bakedResult;
     private String replaced = null;
     private StringBuilder currentEdit = new StringBuilder();
+
+    public SimpleStringCursor() {
+        this.bakedResult = "";
+        this.size = 0;
+        this.cursor = 0;
+    }
+    
+    public SimpleStringCursor(String initialValue) {
+        this.bakedResult = initialValue;
+        this.size = initialValue.length();
+        this.cursor = initialValue.length();
+    }
 
     @Override
     public void cancel() {
