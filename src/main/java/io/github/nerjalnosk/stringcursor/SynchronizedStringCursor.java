@@ -291,7 +291,7 @@ public class SynchronizedStringCursor implements StringCursor {
         this.lock.lock();
         Optional<Character> optional;
         if (this.cursor == this.size) optional = Optional.empty();
-        optional = Optional.of(this.bakedResult.charAt(this.cursor));
+        else optional = Optional.of(this.bakedResult.charAt(this.cursor));
         this.lock.unlock();
         return optional;
     }
@@ -301,7 +301,7 @@ public class SynchronizedStringCursor implements StringCursor {
         this.lock.lock();
         Optional<Character> optional;
         if (this.cursor == 0) optional = Optional.empty();
-        optional = Optional.of(this.bakedResult.charAt(this.cursor-1));
+        else optional = Optional.of(this.bakedResult.charAt(this.cursor-1));
         this.lock.unlock();
         return optional;
     }
