@@ -1,5 +1,6 @@
 package io.github.nerjalnosk.stringcursor;
 
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
@@ -11,6 +12,7 @@ import java.util.regex.Pattern;
  */
 @SuppressWarnings({"unused", "UnusedReturnValue"})
 public interface StringCursor {
+
     /**
      * Cancels the last executed modification,
      * according to the current implementation's
@@ -70,14 +72,34 @@ public interface StringCursor {
     boolean erase();
 
     /**
-     * Removes to the last start of word before
-     * the cursor, or to the beginning if none
-     * between then, and returns how many
-     * characters were effectively removed.
+     * Removes to the last start of word before the
+     * cursor, or to the beginning if none between
+     * then, and returns how many characters were
+     * effectively removed.
      * @return How many characters were effectively
      *         removed.
      */
     int eraseWord();
+
+    /**
+     * Returns the character right after the current
+     * cursor position, or {@link Optional#EMPTY} if
+     * none.
+     * @return The character right after the
+     *         current cursor position, or
+     *         {@link Optional#EMPTY} if none.
+     */
+    Optional<Character> getCharacterAfter();
+
+    /**
+     * Returns the character right before the current
+     * cursor position, or {@link Optional#EMPTY} if
+     * none.
+     * @return The character right before the
+     *         current cursor position, or
+     *         {@link Optional#EMPTY} if none.
+     */
+    Optional<Character> getCharacterBefore();
 
     /**
      * Returns the current position of the cursor.

@@ -6,6 +6,7 @@ import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.util.Deque;
 import java.util.LinkedList;
+import java.util.Optional;
 
 /**
  * Simple non-synchronous implementation of the
@@ -188,6 +189,18 @@ public class SimpleStringCursor implements StringCursor {
         }
         this.stashDeletion();
         return i;
+    }
+
+    @Override
+    public Optional<Character> getCharacterAfter() {
+        if (this.cursor == this.size) return Optional.empty();
+        return Optional.of(this.bakedResult.charAt(this.cursor));
+    }
+
+    @Override
+    public Optional<Character> getCharacterBefore() {
+        if (this.cursor == 0) return Optional.empty();
+        return Optional.of(this.bakedResult.charAt(this.cursor-1));
     }
 
     @Override
