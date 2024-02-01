@@ -83,21 +83,21 @@ public interface StringCursor {
 
     /**
      * Returns the character right after the current
-     * cursor position, or {@link Optional#EMPTY} if
+     * cursor position, or {@code Optional#EMPTY} if
      * none.
      * @return The character right after the
      *         current cursor position, or
-     *         {@link Optional#EMPTY} if none.
+     *         {@code Optional#EMPTY} if none.
      */
     Optional<Character> getCharacterAfter();
 
     /**
      * Returns the character right before the current
-     * cursor position, or {@link Optional#EMPTY} if
+     * cursor position, or {@code Optional#EMPTY} if
      * none.
      * @return The character right before the
      *         current cursor position, or
-     *         {@link Optional#EMPTY} if none.
+     *         {@code Optional#EMPTY} if none.
      */
     Optional<Character> getCharacterBefore();
 
