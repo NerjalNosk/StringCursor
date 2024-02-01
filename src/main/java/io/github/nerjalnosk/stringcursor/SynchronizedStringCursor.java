@@ -7,9 +7,11 @@ import java.awt.datatransfer.StringSelection;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.Optional;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Simple non-synchronous implementation of the
+ * Simple synchronous implementation of the
  * {@link StringCursor} interface.
  * <p>
  * Automatically flushes modifications to the
@@ -20,7 +22,8 @@ import java.util.Optional;
  * support.
  */
 @SuppressWarnings({"unused", "DuplicatedCode"})
-public class SimpleStringCursor implements StringCursor {
+public class SynchronizedStringCursor implements StringCursor {
+    private final Lock lock = new ReentrantLock();
     private final Deque<Edit> history = new LinkedList<>();
     private final Deque<Edit> canceled = new LinkedList<>();
     private boolean eraseDel = false;
@@ -35,22 +38,77 @@ public class SimpleStringCursor implements StringCursor {
     private String replaced = null;
     private StringBuilder currentEdit = new StringBuilder();
 
-    public SimpleStringCursor() {
+    public SynchronizedStringCursor() {
         this.bakedResult = "";
         this.size = 0;
         this.cursor = 0;
     }
-    
-    public SimpleStringCursor(String initialValue) {
+
+    public SynchronizedStringCursor(String initialValue) {
         this.bakedResult = initialValue;
         this.size = initialValue.length();
         this.cursor = initialValue.length();
     }
 
+    protected Pair asyncGetSelectionPair() {
+        if (!this.select) {
+            return new Pair(this.cursor, this.cursor);
+        }
+        return new Pair(this.cursor, this.selectStart);
+    }
+
+    protected void asyncStash() {
+        this.asyncStashInput();
+        this.asyncStashDeletion();
+    }
+
+    protected void asyncStashDeletion() {
+        int del = Math.min(Math.max(this.deletion, 0), this.cursor);
+        if (del == 0) {
+            return;
+        }
+        this.deletion = 0;
+        if (this.eraseDel) {
+            int target = this.cursor + del;
+            String deleted = this.bakedResult.substring(this.cursor, target);
+            this.history.addLast(new Edit(EditType.DELETE, target, this.cursor, deleted, null));
+            this.size = this.size - target + this.cursor;
+            this.eraseDel = false;
+        } else {
+            int newCursor = this.cursor - del;
+            String deleted = this.bakedResult.substring(newCursor, this.cursor);
+            this.history.addLast(new Edit(EditType.DELETE, newCursor, this.cursor, deleted, null));
+            this.cursor = newCursor;
+        }
+        this.size -= del;
+        this.canceled.clear();
+    }
+
+    protected void asyncStashInput() {
+        if (this.currentEdit.isEmpty()) {
+            return;
+        }
+        String input = this.currentEdit.toString();
+        this.currentEdit = new StringBuilder();
+        if (this.replace) {
+            this.history.addLast(new Edit(EditType.REPLACE, this.cursor - input.length(), this.cursor, input, this.replaced));
+            this.replaced = null;
+            this.replace = false;
+        } else {
+            this.history.addLast(new Edit(EditType.WRITE, this.cursor - input.length(), this.cursor, input, null));
+        }
+        this.word = false;
+        this.canceled.clear();
+    }
+
     @Override
     public void cancel() {
-        this.stash();
-        if (this.history.isEmpty()) return;
+        this.lock.lock();
+        this.asyncStash();
+        if (this.history.isEmpty()) {
+            this.lock.unlock();
+            return;
+        }
         Edit edit = this.history.removeLast();
         this.canceled.addLast(edit);
         this.select = false;
@@ -71,69 +129,87 @@ public class SimpleStringCursor implements StringCursor {
             this.cursor = edit.from() + edit.old().length();
             this.size = this.size - len + edit.old().length();
         }
+        this.lock.unlock();
     }
 
     @Override
     public boolean copySystemClipboard() {
-        this.stash();
-        if (!this.select) return false;
+        this.lock.lock();
+        this.asyncStash();
+        if (!this.select) {
+            this.lock.unlock();
+            return false;
+        }
         try {
             StringSelection selection = new StringSelection(this.getSelectedText());
             Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
             clipboard.setContents(selection, null);
+            return true;
         } catch (Exception e) {
             return false;
+        } finally {
+            this.lock.unlock();
         }
-        return true;
     }
 
     @Override
     public boolean cutSystemClipboard() {
-        this.stash();
-        if (!this.select) return false;
+        this.lock.lock();
+        this.asyncStash();
+        if (!this.select) {
+            this.lock.unlock();
+            return false;
+        }
         try {
             StringSelection selection = new StringSelection(this.getSelectedText());
             Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
             clipboard.setContents(selection, null);
             this.delete();
+            return true;
         } catch (Exception e) {
             return false;
+        } finally {
+            this.lock.unlock();
         }
-        return true;
     }
 
     @Override
     public boolean delete() {
-        this.stashInput();
-        if (this.deletion > 0 && !this.eraseDel) this.stashDeletion();
+        this.lock.lock();
+        this.asyncStashInput();
+        if (this.deletion > 0 && !this.eraseDel) this.asyncStashDeletion();
         if (this.select) {
-            this.stashDeletion();
-            Pair selection = this.getSelectionPair();
+            this.asyncStashDeletion();
+            Pair selection = this.asyncGetSelectionPair();
             this.selectStart = selection.from();
             this.cursor = selection.to();
             this.deletion = selection.to() - selection.from();
             this.bakedResult = this.bakedResult.substring(0, selection.to()) + this.bakedResult.substring(selection.from());
-            this.stashDeletion();
+            this.asyncStashDeletion();
         } else if (this.cursor < this.size) {
             this.eraseDel = true;
             this.deletion++;
             this.size--;
         } else {
+            this.lock.unlock();
             return false;
         }
         this.canceled.clear();
+        this.lock.unlock();
         return true;
     }
 
     @Override
     public int deleteWord() {
-        if (this.deletion > 0) this.stashDeletion();
+        this.lock.lock();
+        if (this.deletion > 0) this.asyncStashDeletion();
         if (this.select) {
             int i = this.getSelectionSize();
             this.delete();
+            this.lock.unlock();
             return i;
         }
-        this.stashInput();
+        this.asyncStashInput();
         this.eraseDel = true;
         boolean b = false;
         int i = 0;
@@ -149,42 +225,48 @@ public class SimpleStringCursor implements StringCursor {
             }
             i++;
         }
-        this.stashDeletion();
+        this.asyncStashDeletion();
+        this.lock.unlock();
         return i;
     }
 
     @Override
     public boolean erase() {
-        if (this.eraseDel) this.stashDeletion();
-        this.stashInput();
+        this.lock.lock();
+        if (this.eraseDel) this.asyncStashDeletion();
+        this.asyncStashInput();
         if (this.select) {
-            this.stashDeletion();
-            Pair selection = this.getSelectionPair();
+            this.asyncStashDeletion();
+            Pair selection = this.asyncGetSelectionPair();
             this.selectStart = selection.from();
             this.cursor = selection.to();
             this.deletion = selection.to() - selection.from();
-            this.stashDeletion();
+            this.asyncStashDeletion();
         } else if (this.cursor > 0) {
             this.deletion++;
             this.cursor--;
             this.size--;
         } else {
+            this.lock.unlock();
             return false;
         }
         this.canceled.clear();
+        this.lock.unlock();
         return true;
     }
 
     @Override
     public int eraseWord() {
-        if (this.eraseDel) this.stashDeletion();
+        this.lock.lock();
+        if (this.eraseDel) this.asyncStashDeletion();
         if (this.select) {
             int i = this.getSelectionSize();
             this.erase();
+            this.lock.unlock();
             return i;
         }
-        this.stashInput();
-        if (this.deletion > 0) this.stashDeletion();
+        this.asyncStashInput();
+        if (this.deletion > 0) this.asyncStashDeletion();
         boolean b = false;
         int i = 0;
         while (this.cursor - this.deletion > 0) {
@@ -199,159 +281,230 @@ public class SimpleStringCursor implements StringCursor {
             }
             i++;
         }
-        this.stashDeletion();
+        this.asyncStashDeletion();
+        this.lock.unlock();
         return i;
     }
 
     @Override
     public Optional<Character> getCharacterAfter() {
-        if (this.cursor == this.size) return Optional.empty();
-        return Optional.of(this.bakedResult.charAt(this.cursor));
+        this.lock.lock();
+        Optional<Character> optional;
+        if (this.cursor == this.size) optional = Optional.empty();
+        optional = Optional.of(this.bakedResult.charAt(this.cursor));
+        this.lock.unlock();
+        return optional;
     }
 
     @Override
     public Optional<Character> getCharacterBefore() {
-        if (this.cursor == 0) return Optional.empty();
-        return Optional.of(this.bakedResult.charAt(this.cursor-1));
+        this.lock.lock();
+        Optional<Character> optional;
+        if (this.cursor == 0) optional = Optional.empty();
+        optional = Optional.of(this.bakedResult.charAt(this.cursor-1));
+        this.lock.unlock();
+        return optional;
     }
 
     @Override
     public int getCursor() {
-        return cursor;
+        this.lock.lock();
+        int i = cursor;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int getDeletion() {
-        return deletion;
+        this.lock.lock();
+        int i = deletion;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int getHistorySize() {
-        return this.history.size();
+        this.lock.lock();
+        int i = this.history.size();
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int getHistoryCanceledSize() {
-        return this.canceled.size();
+        this.lock.lock();
+        int i = this.canceled.size();
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public String getSelectedText() {
-        if (!this.select) return "";
-        Pair selection = this.getSelectionPair();
-        return this.bakedResult.substring(selection.from(), selection.to());
+        this.lock.lock();
+        String s;
+        if (!this.select) {
+            s = "";
+        } else {
+            Pair selection = this.asyncGetSelectionPair();
+            s = this.bakedResult.substring(selection.from(), selection.to());
+        }
+        this.lock.unlock();
+        return s;
     }
 
     @Override
     public Pair getSelectionPair() {
+        this.lock.lock();
+        Pair pair;
         if (!this.select) {
-            return new Pair(this.cursor, this.cursor);
+            pair = new Pair(this.cursor, this.cursor);
+        } else {
+            pair =new Pair(this.cursor, this.selectStart);
         }
-        return new Pair(this.cursor, this.selectStart);
+        this.lock.unlock();
+        return pair;
     }
 
     @Override
     public int getSelectionSize() {
-        if (!this.select) return 0;
-        return Math.abs(this.cursor - this.selectStart);
+        this.lock.lock();
+        int i;
+        if (!this.select) i = 0;
+        else i = Math.abs(this.cursor - this.selectStart);
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int getSelectionStart() {
-        if (!this.select) return -1;
-        return this.selectStart;
+        this.lock.lock();
+        int i;
+        if (!this.select) i = -1;
+        else i = this.selectStart;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int getSize() {
-        return size;
+        this.lock.lock();
+        int i = size;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public void goTo(int pos) {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         this.select = false;
         this.cursor = Math.min(Math.max(pos, 0), this.size);
+        this.lock.unlock();
     }
 
     @Override
     public int goToEnd() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         this.select = false;
         this.cursor = this.size;
-        return this.cursor;
+        int i = this.cursor;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int goToStart() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         this.select = false;
         this.cursor = 0;
+        this.lock.unlock();
         return 0;
     }
 
     @Override
     public int goToWordEnd() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         navigateToWordEnd();
         this.select = false;
-        return this.cursor;
+        int i = this.cursor;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int goToWordStart() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         navigateToWordStart();
         this.select = false;
-        return this.cursor;
+        int i = this.cursor;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public boolean hasSelection() {
-        return this.select;
+        this.lock.lock();
+        boolean b = this.select;
+        this.lock.unlock();
+        return b;
     }
 
     @Override
     public void insert(String input) {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         this.currentEdit.append(input);
-        this.stashInput();
+        this.asyncStashInput();
+        this.lock.unlock();
     }
 
     @Override
     public void move(int jump) {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         this.select = false;
         this.cursor = Math.min(Math.max(this.cursor + jump, 0), this.size);
+        this.lock.unlock();
     }
 
     @Override
     public int moveLeft() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (this.select) {
             this.select = false;
-            this.cursor = this.getSelectionPair().from();
+            this.cursor = this.asyncGetSelectionPair().from();
         } else if (this.cursor > 0) {
             this.cursor--;
         }
-        return this.cursor;
+        int i = this.cursor;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int moveRight() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (this.select) {
-            this.cursor = this.getSelectionPair().to();
+            this.cursor = this.asyncGetSelectionPair().to();
             this.select = false;
         } else if (this.cursor < this.size) {
             this.cursor++;
         }
-        return this.cursor;
+        int i = this.cursor;
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public boolean pasteSystemClipboard() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (Toolkit.getDefaultToolkit().getSystemClipboard().isDataFlavorAvailable(DataFlavor.stringFlavor)) {
             try {
                 String input = (String) Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
@@ -359,19 +512,25 @@ public class SimpleStringCursor implements StringCursor {
                 this.bakedResult = this.bakedResult.substring(0, this.cursor) + input + this.bakedResult.substring(this.cursor);
                 this.size += input.length();
                 this.cursor += input.length();
-                this.stashInput();
+                this.asyncStashInput();
+                this.lock.unlock();
                 return true;
             } catch (Exception ex) {
                 // oh, well
             }
         }
+        this.lock.unlock();
         return false;
     }
 
     @Override
     public boolean redo() {
-        if (this.canceled.isEmpty()) return false;
-        this.stash();
+        this.lock.lock();
+        if (this.canceled.isEmpty()) {
+            this.lock.unlock();
+            return false;
+        }
+        this.asyncStash();
         Edit edit = this.canceled.removeLast();
         this.history.addLast(edit);
         if (edit.type() == EditType.WRITE) {
@@ -394,15 +553,20 @@ public class SimpleStringCursor implements StringCursor {
             this.cursor = edit.from() + len;
             this.size = this.size - edit.value().length() + len;
         }
+        this.lock.unlock();
         return true;
     }
 
     @Override
     public int selectLeft() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (this.cursor == 0) {
-            if (!this.select) return 0;
-            return this.selectStart;
+            int i;
+            if (!this.select) i = 0;
+            else i = this.selectStart;
+            this.lock.unlock();
+            return i;
         }
         if (!this.select) {
             this.select = true;
@@ -411,17 +575,24 @@ public class SimpleStringCursor implements StringCursor {
         this.cursor--;
         if (this.cursor == this.selectStart) {
             this.select = false;
+            this.lock.unlock();
             return 0;
         }
-        return Math.abs(this.selectStart - this.cursor);
+        int i = Math.abs(this.selectStart - this.cursor);
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int selectRight() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (this.cursor == this.size) {
-            if (!this.select) return 0;
-            return this.size - this.selectStart;
+            int i;
+            if (!this.select) i = 0;
+            else i = this.size - this.selectStart;
+            this.lock.unlock();
+            return i;
         }
         if (!this.select) {
             this.select = true;
@@ -430,14 +601,18 @@ public class SimpleStringCursor implements StringCursor {
         this.cursor++;
         if (this.cursor == this.selectStart) {
             this.select = false;
+            this.lock.unlock();
             return 0;
         }
-        return Math.abs(this.selectStart - this.cursor);
+        int i = Math.abs(this.selectStart - this.cursor);
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int selectTo(int pos) {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (!this.select) {
             this.select = true;
             this.selectStart = this.cursor;
@@ -445,14 +620,18 @@ public class SimpleStringCursor implements StringCursor {
         this.cursor = Math.min(Math.max(pos, 0), this.size);
         if (this.cursor == this.selectStart) {
             this.select = false;
+            this.lock.unlock();
             return 0;
         }
-        return Math.abs(this.selectStart - this.cursor);
+        int i = Math.abs(this.selectStart - this.cursor);
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int selectWordEnd() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (!this.select) {
             this.select = true;
             this.selectStart = this.cursor;
@@ -460,14 +639,18 @@ public class SimpleStringCursor implements StringCursor {
         navigateToWordEnd();
         if (this.selectStart == this.cursor) {
             this.select = false;
+            this.lock.unlock();
             return 0;
         }
-        return Math.abs(this.cursor - this.selectStart);
+        int i = Math.abs(this.cursor - this.selectStart);
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public int selectWordStart() {
-        this.stash();
+        this.lock.lock();
+        this.asyncStash();
         if (!this.select) {
             this.select = true;
             this.selectStart = this.cursor;
@@ -475,21 +658,28 @@ public class SimpleStringCursor implements StringCursor {
         navigateToWordStart();
         if (this.selectStart == this.cursor) {
             this.select = false;
+            this.lock.unlock();
             return 0;
         }
-        return Math.abs(this.selectStart - this.cursor);
+        int i = Math.abs(this.selectStart - this.cursor);
+        this.lock.unlock();
+        return i;
     }
 
     @Override
     public void stash() {
-        this.stashInput();
-        this.stashDeletion();
+        this.lock.lock();
+        this.asyncStashInput();
+        this.asyncStashDeletion();
+        this.lock.unlock();
     }
 
     @Override
     public void stashDeletion() {
+        this.lock.lock();
         int del = Math.min(Math.max(this.deletion, 0), this.cursor);
         if (del == 0) {
+            this.lock.unlock();
             return;
         }
         this.deletion = 0;
@@ -507,11 +697,14 @@ public class SimpleStringCursor implements StringCursor {
         }
         this.size -= del;
         this.canceled.clear();
+        this.lock.unlock();
     }
 
     @Override
     public void stashInput() {
+        this.lock.lock();
         if (this.currentEdit.isEmpty()) {
+            this.lock.unlock();
             return;
         }
         String input = this.currentEdit.toString();
@@ -525,19 +718,24 @@ public class SimpleStringCursor implements StringCursor {
         }
         this.word = false;
         this.canceled.clear();
+        this.lock.unlock();
     }
 
     @Override
     public String toString() {
-        return this.bakedResult;
+        this.lock.lock();
+        String s = this.bakedResult;
+        this.lock.unlock();
+        return s;
     }
 
     @Override
     public StringCursor write(char c) {
-        this.stashDeletion();
+        this.lock.lock();
+        this.asyncStashDeletion();
         this.canceled.clear();
         if (this.select) {
-            Pair pair = this.getSelectionPair();
+            Pair pair = this.asyncGetSelectionPair();
             this.replace = true;
             this.select = false;
             this.replaced = this.bakedResult.substring(pair.from(), pair.to());
@@ -546,10 +744,11 @@ public class SimpleStringCursor implements StringCursor {
             this.word = !StringCursor.isWordBreakChar(c);
             this.size = pair.from() + 1 + this.size - pair.to();
             this.currentEdit.append(c);
+            this.lock.unlock();
             return this;
         }
         if (StringCursor.isWordBreakChar(c)) {
-            if (this.word) this.stashInput();
+            if (this.word) this.asyncStashInput();
         } else {
             this.word = true;
         }
@@ -557,6 +756,7 @@ public class SimpleStringCursor implements StringCursor {
         this.bakedResult = this.bakedResult.substring(0, pos) + c + this.bakedResult.substring(pos);
         this.size++;
         this.currentEdit.append(c);
+        this.lock.unlock();
         return this;
     }
 
